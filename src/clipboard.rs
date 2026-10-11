@@ -8,7 +8,7 @@ use std::sync::Mutex;
 
 use anyhow::anyhow;
 
-/// The clipboard a selection is copied to.
+/// The clipboard a selection is copied to and a paste is read from.
 pub(crate) struct Clipboard {
     /// Where the connection lives. Behind a mutex because arboard's handle is
     /// not `Sync`, and a component of the world has to be.
@@ -35,6 +35,23 @@ impl Clipboard {
             .set_text(text)
             .map_err(|error| anyhow!("copying to the clipboard: {error}"))
     }
+
+    /// What is on the clipboard, as text.
+    ///
+    /// A clipboard that holds no text — a picture, or nothing at all — is an
+    /// empty paste rather than an error: there is nothing to send.
+    pub(crate) fn paste(&self) -> anyhow::Result<String> {
+        let mut clipboard = self
+            .inner
+            .lock()
+            .map_err(|_| anyhow!("the clipboard is poisoned"))?;
+
+        match clipboard.get_text() {
+            Ok(text) => Ok(text),
+            Err(arboard::Error::ContentNotAvailable) => Ok(String::new()),
+            Err(error) => Err(anyhow!("pasting from the clipboard: {error}")),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -59,6 +76,10 @@ mod tests {
 
         assert_eq!(
             reader.get_text().expect("reading it back"),
+            "hext selection"
+        );
+        assert_eq!(
+            clipboard.paste().expect("reading it back"),
             "hext selection"
         );
 

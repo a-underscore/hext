@@ -7,13 +7,14 @@ look is a Python file: colours, the shader the screen is drawn with, and the two
 pictures that can go behind and in front of it.
 
 hext is moddable. The configuration file is Python, evaluated by an embedded
-interpreter and re-read whenever it changes, so the look and the behaviour are
-both something a user edits rather than something baked into the binary: the
-colours and the shader, the pictures behind and in front of the grid, systems that
-shape the running app on every event, and render functions that run once per frame
-with the frame about to be drawn — the terminal itself included, so a config can
-animate it. Nothing above the shell needs a rebuild *or a restart* to change — see
-[Configuration](#configuration).
+interpreter, so the look and the behaviour are both something a user edits rather
+than something baked into the binary: the colours and the shader, the pictures
+behind and in front of the grid, systems that shape the running app on every
+event, and render functions that run once per frame with the frame about to be
+drawn — the terminal itself included, so a config can animate it. Nothing above
+the shell needs a rebuild to change, and a debug build — `cargo run` — does not
+even need a restart: it re-reads the file whenever it changes. A release build
+reads the file once at startup — see [Configuration](#configuration).
 
 ```sh
 cargo run   # the terminal
@@ -103,6 +104,12 @@ own, drawn over whatever the shader puts behind it.
   system clipboard, with each line cut at its last non-blank cell, and that key
   does not go on to the shell. A click anywhere starts a new selection, and
   resizing the window gives it up, because the text has moved.
+- Pastes with `Ctrl+Shift+V`: what the clipboard holds goes to the shell in one
+  write, every line break an `Enter`, and that key does not go on to the shell
+  either. A program that asked for bracketed paste (`CSI ? 2004 h`) receives
+  the text wrapped in the bracket markers, so a whole run lands as one paste
+  rather than as typing. A clipboard with no text on it — a picture, or
+  nothing — is nothing to paste.
 - Forwards keystrokes to the shell: arrows, Home/End, Insert/Delete, PageUp/Down,
   F1–F12, `Shift`+`Tab` as back-tab, `Ctrl`+letter as control codes, `Alt`+key as
   an `ESC` prefix, and the `CSI 1;n` modifier encoding for everything a modifier
@@ -123,9 +130,10 @@ own, drawn over whatever the shader puts behind it.
   pipeline, so the systems a config file registered can shape the frame that is
   about to be drawn.
 - Lets the config file add systems of its own, so Python can shape the running
-  app rather than only fill in settings, and re-reads the file when it changes, so
-  the colours, the shader, the pictures and what Python does are all an edit and a
-  save rather than a restart.
+  app rather than only fill in settings, and, in a debug build, re-reads the file
+  when it changes, so the colours, the shader, the pictures and what Python does
+  are all an edit and a save rather than a restart. A release build reads the
+  file once at startup.
 - Can draw a frame every frame when the config asks for it (`animate = True`),
   which is what a shader with a clock in it needs — the uniform it reads ends with
   `time`, seconds since the app started — and pauses that when the window is in
@@ -161,10 +169,11 @@ On first run the app writes a `config.py` into the config directory —
 out; a file that cannot be evaluated is reported instead of stopping the
 terminal.
 
-The file is watched while the app runs: save it and the change lands on the
-running terminal, with no restart and no rebuild. A setting of the wrong type, a
-picture that cannot be read, or a shader that does not compile is reported and
-that one setting keeps its default.
+In a debug build the file is watched while the app runs: save it and the change
+lands on the running terminal, with no restart and no rebuild. A release build
+reads the file once at startup and keeps what it read. A setting of the wrong
+type, a picture that cannot be read, or a shader that does not compile is
+reported and that one setting keeps its default.
 
 These are the names the file documents:
 
@@ -181,14 +190,15 @@ These are the names the file documents:
 
 Every one of them is read back: the colours and the two pictures are part of the
 frame, the shader is the pipeline the frame is drawn with, `animate` decides
-whether the loop keeps drawing, and the file is re-read when it is saved, so none
-of it needs a rebuild. A window manager is free to override the requested window
-size.
+whether the loop keeps drawing, and the file is re-read when it is saved — in a
+debug build — so none of it needs a rebuild. A window manager is free to override
+the requested window size.
 
-### Two examples
+### The examples
 
-`docs/` holds two whole configs. Either can be copied over your own `config.py`,
-and either can be saved again while hext is running:
+`docs/` holds three whole configs. Any of them can be copied over your own
+`config.py`, and any of them can be saved again while a debug build of hext is
+running:
 
 - `docs/config-aurora.py` — a night sky with bands of light drifting across it,
   a vignette, scanlines, and a render function that walks the cursor colour
@@ -197,6 +207,10 @@ and either can be saved again while hext is running:
 - `docs/config-neon.py` — a synthwave sunset: a sliced sun, a floor grid marching
   towards the viewer, stars, a slow flicker, and the shell's own colours graded
   into the theme. The example of a *theme*.
+- `docs/config-otori-tan.py` — Otori-tan's colours: strands of pale green hair
+  drifting over a deep sage dusk, warm sparks climbing through them, and the
+  shell's ink graded between her mint and her amber. The example of a theme
+  drawn from a character rather than from a place.
 
 A theme in hext is a shader plus the colours the config owns, and the shader is
 the interesting half, because the grid carries the colours the shell asked for:
@@ -208,8 +222,9 @@ reading order of the text: the brightest colour the shell uses is still the
 brightest thing on screen. The 16 ANSI colours are not settings, so a theme
 grades them rather than replacing them.
 
-Both examples are `animate = True`, and both are evaluated by `cargo test` with
-their shaders validated, so the ones the repository ships are known to build.
+All three are `animate = True`, and all three are evaluated by `cargo test`
+with their shaders validated, so the ones the repository ships are known to
+build.
 
 ### A picture behind the grid
 
@@ -322,10 +337,10 @@ separation is the difference between tinted text and broken text.
 
 Source that is present but not valid WGSL is reported and the built-in shader
 used instead, so a typo in the config is a note rather than a terminal that will
-not start — at startup, and again on every reload. It is checked with the same
-WGSL front end (`naga`) that wgpu compiles shaders with, before wgpu is asked for
-the pipeline, because a validation failure there is fatal to the process. The
-built-in shader is parsed and validated by `cargo test`.
+not start — at startup, and again on every reload in a debug build. It is
+checked with the same WGSL front end (`naga`) that wgpu compiles shaders with,
+before wgpu is asked for the pipeline, because a validation failure there is
+fatal to the process. The built-in shader is parsed and validated by `cargo test`.
 
 ### Animating
 
@@ -345,8 +360,8 @@ the time advance; presenting still paces the frames to the display, so it draws 
 the refresh rate and not faster. Nothing is drawn while the window is in the
 background, so an animation pauses there rather than running unseen.
 
-`animate` is a setting the file can change while the app runs, so the clock only
-has to tick when the shader that reads it is loaded:
+`animate` is a setting the file can change while a debug build of hext is
+running, so the clock only has to tick when the shader that reads it is loaded:
 
 ```wgsl
 fn sky(uv: vec2<f32>, time: f32) -> vec3<f32> {
@@ -363,8 +378,11 @@ frame is what makes an animated shader look grainy.
 
 ### Reloading
 
-The file is read again whenever it changes on disk — checked a few times a second,
-ot once per frame — and what it says is put into the running terminal:
+Hot reloading is a debug-build feature: a debug build — `cargo run` — watches the
+config file for as long as the terminal runs, while a release build reads it once
+at startup and keeps what it read. The file is read again whenever it changes on
+disk — checked a few times a second, not once per frame — and what it says is put
+into the running terminal:
 
 ```
 hext: reloaded /home/you/.config/hext/config.py
@@ -483,11 +501,11 @@ shader clock does: without it there is no next frame to land on.
 | --- | --- |
 | `src/main.rs` | Creates the event loop, its user-event channel, and the application |
 | `src/app.rs` | The winit glue: turns events into `Control` values and runs them through the systems |
-| `src/config.rs` | Writes and evaluates the Python `config.py` through `pyo3`, and watches it so an edit is picked up while the app runs |
+| `src/config.rs` | Writes and evaluates the Python `config.py` through `pyo3`, and, in a debug build, watches it so an edit is picked up while the app runs |
 | `src/pty.rs` | Allocates the PTY, spawns `$SHELL`, and pumps its output from a reader thread |
-| `src/clipboard.rs` | The system clipboard a selection is copied to, held for the life of the app |
+| `src/clipboard.rs` | The system clipboard a selection is copied to and a paste is read from, held for the life of the app |
 | `src/terminal/` | The grid and everything that fills it |
-| `src/terminal/mod.rs` | The VT parser and character grid, key encoding, and the rasterizer that paints cells and glyphs into the screen texture, as ink on nothing |
+| `src/terminal/mod.rs` | The VT parser and character grid, key and paste encoding, and the rasterizer that paints cells and glyphs into the screen texture, as ink on nothing |
 | `src/terminal/glyphs.rs` | The characters the terminal draws itself, out of the cell's rectangle: box drawing, blocks, braille, sextants and the Powerline wedges |
 | `src/terminal/font.rs` | Loads the system monospace family — regular, bold and italic — and answers rasterization requests |
 | `src/render/` | Everything that draws |
@@ -545,7 +563,7 @@ The ambient values reach a renderer as `world::AmbientUniform`: a padding-free
   through `python3` on `PATH` (or `PYO3_PYTHON`).
 
 `cargo test` covers the grid, the world and the config, and validates the shaders
-the repository ships — the built-in one and the two examples in `docs/` —
+the repository ships — the built-in one and the three examples in `docs/` —
 without needing a GPU or a PTY. The config tests need a Python interpreter, the
 tests that rasterize glyphs need a system monospace font, and the clipboard test
 needs a session to talk to: it is skipped rather than failed when there is none,

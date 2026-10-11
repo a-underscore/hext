@@ -3,8 +3,8 @@
 # sitting on top of it.
 #
 # Copy it over the file hext writes on first run — `~/.config/hext/config.py` —
-# and save it again while the terminal is open: the file is watched, so the look
-# changes without a restart.
+# and save it again while the terminal is open: a debug build watches the file,
+# so the look changes without a restart.
 #
 # A theme is a shader and the two colours the config owns (`background` and
 # `cursor_color`), and this one shows why the shader is the interesting half: the

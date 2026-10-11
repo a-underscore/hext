@@ -1,7 +1,7 @@
 # An animated hext configuration: the reference for what a moving terminal can
 # be. Copy it over the file hext writes on first run — `~/.config/hext/config.py`
-# — and save it again while the terminal is open: the file is watched, so the
-# change lands without a restart.
+# — and save it again while the terminal is open: a debug build watches the
+# file, so the change lands without a restart.
 #
 # Two things here move, in the two different ways a config can:
 #

@@ -3,6 +3,8 @@
 //!
 //! On first run the app writes a documented `config.py` there and reads it back;
 //! every setting is optional and falls back to the default the file documents.
+//! A debug build then watches the file and re-evaluates it when it changes
+//! ([`HOT_RELOAD`]); a release build reads it once at startup.
 
 use std::collections::HashMap;
 use std::ffi::CString;
@@ -70,11 +72,12 @@ const DEFAULT_CONFIG: &str = r#"# hext configuration.
 # anything that produces the right value works. Every name is optional, and one
 # that is missing or of the wrong type falls back to the default shown here.
 #
-# The app reads this file at startup and then watches it, so an edit and a save
-# changes the running terminal — the colours, the shader, the pictures, whether
-# it animates — without a restart. A file that cannot be evaluated, or a setting
-# of the wrong type, is reported and that setting keeps its default; nothing in
-# this file can stop the terminal starting.
+# The app reads this file at startup. A debug build then watches it, so an edit
+# and a save changes the running terminal — the colours, the shader, the
+# pictures, whether it animates — without a restart; a release build reads the
+# file once and keeps what it read. A file that cannot be evaluated, or a
+# setting of the wrong type, is reported and that setting keeps its default;
+# nothing in this file can stop the terminal starting.
 
 # Glyphs are rasterized at this size, in logical pixels.
 font_size = 16.0
@@ -435,13 +438,23 @@ fn setting_bool(globals: &Bound<'_, PyDict>, name: &str) -> Option<bool> {
 /// second does not read it sixty times a second.
 const POLL: Duration = Duration::from_millis(200);
 
+/// Whether the config file is watched and hot reloaded.
+///
+/// Watching is a tool for working on a config — save it and the running
+/// terminal follows — so it is a debug-build feature: the switch is
+/// `debug_assertions`, on in the dev profile (what `cargo run` and `cargo test`
+/// build) and off in release. A release build reads the config file once at
+/// startup and keeps what it read.
+pub(crate) const HOT_RELOAD: bool = cfg!(debug_assertions);
+
 /// The config file, watched for changes while the terminal runs.
 ///
-/// The app keeps one of these and asks it, on every turn of the event loop,
-/// whether the file says something new. When it does the file is evaluated
-/// again and the result handed back to be put into the running terminal, so an
-/// edit and a save is all it takes to change the colours, the shader, the
-/// pictures or the animation — no restart.
+/// The app keeps one of these in a debug build only — [`HOT_RELOAD`] is the
+/// switch — and asks it, on every turn of the event loop, whether the file says
+/// something new. When it does the file is evaluated again and the result handed
+/// back to be put into the running terminal, so an edit and a save is all it
+/// takes to change the colours, the shader, the pictures or the animation — no
+/// restart.
 pub(crate) struct Reload {
     /// Where the config is. `None` when the app could not work out a path at
     /// all, which is when there is nothing to watch.
@@ -1060,6 +1073,7 @@ mod tests {
         let examples = [
             ("aurora", include_str!("../docs/config-aurora.py")),
             ("neon", include_str!("../docs/config-neon.py")),
+            ("otori-tan", include_str!("../docs/config-otori-tan.py")),
         ];
 
         for (name, source) in examples {

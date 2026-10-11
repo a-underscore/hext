@@ -14,11 +14,11 @@ use winit::{
 
 use crate::WINDOW_TITLE;
 use crate::clipboard::Clipboard;
-use crate::config::{Config, Reload};
+use crate::config::{Config, HOT_RELOAD, Reload};
 use crate::pty::Pty;
 use crate::render::{Gpu, Pictures};
 use crate::terminal::font::Font;
-use crate::terminal::{KeyModes, Terminal, encode_key};
+use crate::terminal::{KeyModes, Terminal, encode_key, encode_paste};
 
 /// Wakes the event loop back up when the shell has something to say.
 #[derive(Debug)]
@@ -41,8 +41,9 @@ pub(crate) struct App {
     world: Arc<RwLock<World<UserEvent>>>,
     entity: Id,
     /// The config file, watched so that an edit is picked up while the terminal
-    /// runs rather than at the next start.
-    reload: Reload,
+    /// runs rather than at the next start. Watching is a debug-build tool
+    /// ([`HOT_RELOAD`]), so a release build has no watcher: `None`.
+    reload: Option<Reload>,
 }
 
 impl App {
@@ -74,8 +75,15 @@ impl App {
         let before = world.read().unwrap().sm.read().unwrap().pipeline_counts();
         let config = Config::load(Arc::clone(&world));
         // What the file added to the world's pipelines, so that a reload can
-        // take it back before running the file again.
-        let reload = Reload::new(Config::path().ok(), &before, &world);
+        // take it back before running the file again. Only a debug build
+        // watches the file (`HOT_RELOAD`), so a release build starts with no
+        // watcher at all: it keeps the config it just read until the next
+        // start.
+        let reload = if HOT_RELOAD {
+            Some(Reload::new(Config::path().ok(), &before, &world))
+        } else {
+            None
+        };
 
         world.read().unwrap().attach_value(entity, config);
 
@@ -129,12 +137,19 @@ impl App {
     /// Re-reads the config file when it changed on disk, and puts what it says
     /// into the running app: the terminal's colours, and the renderer's pipeline,
     /// which is rebuilt from the shader and the pictures.
+    ///
+    /// Only a debug build has a watcher here (`HOT_RELOAD`); a release build
+    /// returns with nothing to do.
     fn reload_config(&mut self) {
-        let Some(config) = self.reload.reload(Arc::clone(&self.world)) else {
+        let Some(reload) = self.reload.as_mut() else {
             return;
         };
 
-        if let Some(path) = self.reload.path() {
+        let Some(config) = reload.reload(Arc::clone(&self.world)) else {
+            return;
+        };
+
+        if let Some(path) = reload.path() {
             eprintln!("{WINDOW_TITLE}: reloaded {}", path.display());
         }
 
@@ -229,6 +244,53 @@ impl TerminalSystem {
         if let Err(error) = clipboard.read().unwrap().copy(&text) {
             eprintln!("{WINDOW_TITLE}: {error:#}");
         }
+    }
+
+    /// Sends what is on the clipboard to the shell. `Ctrl+Shift+V` is the
+    /// shortcut a terminal pastes with, and the text goes out in one write: a
+    /// program that asked for bracketed paste receives the whole run as one
+    /// paste, and one that did not gets the text as if it had been typed, each
+    /// line break an `Enter`.
+    fn paste_clipboard(&self, world: &World<UserEvent>) {
+        let Some(clipboard) = world.component::<Clipboard>(self.entity) else {
+            return;
+        };
+
+        let text = match clipboard.read().unwrap().paste() {
+            Ok(text) => text,
+            Err(error) => {
+                eprintln!("{WINDOW_TITLE}: {error:#}");
+                return;
+            }
+        };
+
+        // A clipboard with no text on it — a picture, or nothing at all — is
+        // nothing to paste.
+        if text.is_empty() {
+            return;
+        }
+
+        // The cursor shows again while input arrives, the same as typing: the
+        // bracket mode comes out of the same borrow.
+        let bracketed = match self.terminal(world) {
+            Some(terminal) => {
+                let mut terminal = terminal.write().unwrap();
+
+                terminal.wake_blink();
+                terminal.bracketed_paste()
+            }
+            None => false,
+        };
+
+        let bytes = encode_paste(&text, bracketed);
+
+        if let Some(pty) = self.pty(world)
+            && let Err(error) = pty.read().unwrap().write(&bytes)
+        {
+            eprintln!("{WINDOW_TITLE}: {error:#}");
+        }
+
+        self.request_redraw(world);
     }
 
     fn request_redraw(&self, world: &World<UserEvent>) {
@@ -380,6 +442,15 @@ impl TerminalSystem {
                         if key.eq_ignore_ascii_case("c")) =>
             {
                 self.copy_selection(world);
+            }
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state == ElementState::Pressed
+                    && self.modifiers.control_key()
+                    && self.modifiers.shift_key()
+                    && matches!(&event.logical_key, Key::Character(key)
+                        if key.eq_ignore_ascii_case("v")) =>
+            {
+                self.paste_clipboard(world);
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 // The cursor shows again while keys are arriving, the way a
@@ -571,7 +642,8 @@ impl ApplicationHandler<UserEvent> for App {
 
         // A file that changed is re-read here, on the turn where the loop is
         // about to sleep or draw: the config is not something that has to be
-        // noticed within a frame.
+        // noticed within a frame. A release build has no watcher, so in a
+        // release build this call does nothing.
         self.reload_config();
 
         // Then sleep until the clock's next flip, so a quiet shell costs

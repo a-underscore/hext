@@ -223,6 +223,12 @@ impl Terminal {
         self.screen.key_modes()
     }
 
+    /// Whether the shell asked for bracketed paste (`CSI ? 2004 h`), for
+    /// [`encode_paste`].
+    pub(crate) fn bracketed_paste(&self) -> bool {
+        self.screen.bracketed_paste
+    }
+
     /// The answers the shell is owed for a `DSR` or a device attributes
     /// request, for the caller to write back to the pty. Taking them clears
     /// them, so every answer goes out once.
@@ -1142,6 +1148,11 @@ struct Screen {
     /// `DECCKM` (`CSI ? 1 h`): whether the arrow keys send `ESC O` rather than
     /// `CSI`. The grid only records it; [`encode_key`] reads it back.
     application_keys: bool,
+    /// `CSI ? 2004 h`: whether the program asked for bracketed paste — a paste
+    /// is then sent wrapped in the bracket markers, so it arrives as one paste
+    /// rather than as typing. The grid only records it; [`encode_paste`] reads
+    /// it back.
+    bracketed_paste: bool,
     /// `DECSCNM` (`CSI ? 5 h`): the whole screen drawn with foreground and
     /// background swapped.
     reverse: bool,
@@ -1175,6 +1186,7 @@ impl Default for Screen {
             origin: false,
             insert: false,
             application_keys: false,
+            bracketed_paste: false,
             reverse: false,
             tabs: Vec::new(),
             saved: None,
@@ -1840,6 +1852,10 @@ impl Screen {
                 Some(7) => self.autowrap = enabled,
                 // `DECTCEM`: the cursor's visibility.
                 Some(25) => self.cursor_hidden = !enabled,
+                // Bracketed paste: a paste from the terminal goes out wrapped
+                // in the `CSI 200 ~` and `CSI 201 ~` markers, so the program
+                // reads the whole run as one paste.
+                Some(2004) => self.bracketed_paste = enabled,
                 _ => {}
             }
         }
@@ -2087,6 +2103,48 @@ pub(crate) fn encode_key(key: &Key, modifiers: ModifiersState, modes: KeyModes) 
     }
 }
 
+/// Translates pasted text into the bytes the shell expects on its standard
+/// input.
+///
+/// Every line break becomes a carriage return — what `Enter` sends — because
+/// that is what a line break means to a shell, and `\r\n` counts as one. When
+/// the program asked for bracketed paste (`CSI ? 2004 h`), the text is wrapped
+/// in the `CSI 200 ~` and `CSI 201 ~` markers, so the program reads the whole
+/// run as a single paste rather than as typing.
+pub(crate) fn encode_paste(text: &str, bracketed: bool) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(text.len() + 12);
+
+    if bracketed {
+        bytes.extend_from_slice(b"\x1b[200~");
+    }
+
+    let mut chars = text.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\r' => {
+                bytes.push(b'\r');
+
+                // `\r\n` is one line break, not two.
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+            }
+            '\n' => bytes.push(b'\r'),
+            ch => {
+                let mut utf8 = [0; 4];
+                bytes.extend_from_slice(ch.encode_utf8(&mut utf8).as_bytes());
+            }
+        }
+    }
+
+    if bracketed {
+        bytes.extend_from_slice(b"\x1b[201~");
+    }
+
+    bytes
+}
+
 fn named_key(named: NamedKey, modifiers: ModifiersState, modes: KeyModes) -> Option<Vec<u8>> {
     // The parameter a key with modifiers held sends: one plus a bit for each
     // modifier. It is xterm's encoding, and what every shell, editor and
@@ -2202,7 +2260,7 @@ fn with_alt(mut bytes: Vec<u8>, modifiers: ModifiersState) -> Vec<u8> {
 mod tests {
     use super::{
         ANSI, Attrs, BLINK_INTERVAL, Blink, Color, CursorStyle, Font, KeyModes, Screen, Terminal,
-        Underline, cursor_drawn, encode_key,
+        Underline, cursor_drawn, encode_key, encode_paste,
     };
     use std::sync::{Arc, RwLock};
     use std::time::Instant;
@@ -2386,6 +2444,31 @@ mod tests {
                 .key_modes()
                 .application_cursor_keys
         );
+    }
+
+    #[test]
+    fn pasted_text_sends_line_breaks_as_carriage_returns() {
+        assert_eq!(encode_paste("ls\n", false), b"ls\r");
+        assert_eq!(
+            encode_paste("one\ntwo\r\nthree\rfour", false),
+            b"one\rtwo\rthree\rfour"
+        );
+        assert_eq!(encode_paste("no breaks", false), b"no breaks");
+    }
+
+    #[test]
+    fn a_bracketed_paste_is_wrapped_in_the_markers() {
+        assert_eq!(
+            encode_paste("echo hi\n", true),
+            b"\x1b[200~echo hi\r\x1b[201~"
+        );
+    }
+
+    #[test]
+    fn bracketed_paste_mode_is_recorded_from_the_escape_sequence() {
+        assert!(!screen(1, 1, b"").bracketed_paste);
+        assert!(screen(1, 1, b"\x1b[?2004h").bracketed_paste);
+        assert!(!screen(1, 1, b"\x1b[?2004h\x1b[?2004l").bracketed_paste);
     }
 
     #[test]
